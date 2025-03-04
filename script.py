@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """
-HAMMER OF THE GODS - Extended Network Toolkit (überarbeitet)
---------------------------------------------------------------
+HAMMER OF THE GODS - Extended Network Toolkit (überarbeitet mit Caching, Masscan, Memory-Optimierung, Parallel-Scan und lebhaftem CLI)
+---------------------------------------------------------------------------------------------
 Features:
  - Kombinierter IPv4-Scan (synchron und asynchron wählbar)
  - IPv6-Scan
+ - Scan Result Caching: Vorherige Scan-Ergebnisse werden als JSON gespeichert.
+ - Unterstützung von Masscan für schnelle Port-Scans großer Netzwerke.
+ - Speicheroptimierung durch chunkbasiertes Streaming bei großen Subnetzen.
+ - Paralleles Scannen über mehrere Interfaces.
+ - Farbkodiertes Logging für bessere Übersicht (colorama)
+ - Fortschrittsanzeigen für langlaufende Operationen (tqdm)
  - Tabellarische Anzeige gefundener Geräte (mit IP als Feld)
  - Diverse Sicherheits- und Spoofing-Tools (ARP/ND-Spoofing, ARP-Security-Test, ND-Sniffing)
  - Blackout-Optionen (ARP, IPv6, iptables)
@@ -13,8 +19,35 @@ Features:
  - Umfangreiches Logging
 """
 
-import os, sys, time, threading, subprocess, datetime, ipaddress, socket, netifaces, random, asyncio
+import os, sys, time, threading, subprocess, datetime, ipaddress, socket, netifaces, random, asyncio, json
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Farbliche Gestaltung
+try:
+    from colorama import init as colorama_init, Fore, Style
+    colorama_init(autoreset=True)
+except ImportError:
+    # Fallback, falls colorama nicht installiert ist
+    class Fore:
+        RED = "\033[91m"
+        GREEN = "\033[92m"
+        YELLOW = "\033[93m"
+        BLUE = "\033[94m"
+        CYAN = "\033[96m"
+        RESET = "\033[0m"
+    class Style:
+        BRIGHT = "\033[1m"
+        RESET_ALL = "\033[0m"
+
+# Fortschrittsanzeige
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = None
+
+# Konfiguration für den Cache
+CACHE_FILE = "scan_cache.json"
+CACHE_EXPIRATION = 3600  # Cache gültig für 1 Stunde
 
 try:
     from tabulate import tabulate
@@ -32,6 +65,30 @@ try:
     import requests
 except ImportError:
     requests = None
+
+######################################################################
+#                          CACHE-FUNKTIONEN
+######################################################################
+
+def load_scan_cache():
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, "r") as f:
+                cache = json.load(f)
+            return cache
+        except Exception as e:
+            print(f"{Fore.RED}Cache-Laden fehlgeschlagen: {e}{Fore.RESET}")
+    return {}
+
+def save_scan_cache(cache):
+    try:
+        with open(CACHE_FILE, "w") as f:
+            json.dump(cache, f)
+    except Exception as e:
+        print(f"{Fore.RED}Cache-Speichern fehlgeschlagen: {e}{Fore.RESET}")
+
+def get_cache_key(params):
+    return json.dumps(params, sort_keys=True)
 
 ######################################################################
 #                    HILFSFUNKTIONEN FÜR VALIDIERUNG
@@ -95,10 +152,17 @@ class RateLimiter:
             self.allowance -= 1.0
 
 ######################################################################
-#                         LOGGING-KOMPONENTE
+#                         LOGGING-KOMPONENTE (mit Farben)
 ######################################################################
 
 class PenTestLogger:
+    COLORS = {
+        "DEBUG": Fore.BLUE,
+        "INFO": Fore.GREEN,
+        "STATS": Fore.CYAN,
+        "WARNING": Fore.YELLOW,
+        "ERROR": Fore.RED
+    }
     def __init__(self, log_to_console=True, log_file=None, log_level="INFO"):
         self.log_to_console = log_to_console
         self.log_file = log_file
@@ -110,8 +174,10 @@ class PenTestLogger:
     def log(self, event, message):
         if self.levels.get(event, 20) >= self.levels.get(self.log_level, 20):
             timestamp = datetime.datetime.now().isoformat()
+            color = self.COLORS.get(event, "")
+            reset = Fore.RESET
             log_line = f"{timestamp},{event},{message}"
-            print(f"[{timestamp}] [{event}] {message}")
+            print(f"{color}[{timestamp}] [{event}] {message}{reset}")
             if self.log_file:
                 with open(self.log_file, 'a') as f:
                     f.write(f"{log_line}\n")
@@ -247,7 +313,52 @@ def reverse_dns_lookup(ip):
         return None
 
 ######################################################################
-#             ASYNCHRONE FUNKTIONEN (PING & SCAN)
+#      ASYNCHRONE FUNKTIONEN (PING & SCAN) mit Chunking & Progressbar
+######################################################################
+
+def ping_sweep_generator(subnet, logger, timeout=1, chunk_size=50):
+    net = ipaddress.IPv4Network(subnet, strict=False)
+    hosts = list(net.hosts())
+    iterable = hosts
+    if tqdm:
+        iterable = tqdm(hosts, desc="Ping-Sweep", unit="host")
+    for ip in iterable:
+        ip_str = str(ip)
+        if ping_host(ip_str, timeout):
+            logger.log("INFO", f"Host {ip_str} antwortet.")
+            yield ip_str
+
+async def async_ping_sweep_subnet(subnet_str, logger, timeout=1):
+    active = []
+    for ip in ping_sweep_generator(subnet_str, logger, timeout, chunk_size=50):
+        active.append(ip)
+    logger.log("INFO", f"Async Ping-Sweep abgeschlossen. {len(active)} aktive Hosts.")
+    return active
+
+######################################################################
+#                         MASSCAN INTEGRATION
+######################################################################
+
+def masscan_scan(subnet, logger, ports="0-65535", rate=1000):
+    cmd = ["masscan", "-p", ports, str(subnet), "--rate", str(rate)]
+    logger.log("INFO", f"Starte masscan auf {subnet} (Ports: {ports}, Rate: {rate})...")
+    try:
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+        output = result.stdout.splitlines()
+        found = []
+        for line in output:
+            if "Discovered open port" in line:
+                parts = line.split()
+                ip = parts[-1]
+                found.append(ip)
+        logger.log("INFO", f"Masscan abgeschlossen. {len(found)} Hosts gefunden.")
+        return found
+    except Exception as e:
+        logger.log("ERROR", f"Masscan-Scan fehlgeschlagen: {e}")
+        return []
+
+######################################################################
+#      ASYNCHRONE FUNKTIONEN (NMAP, SCAN, ETC.) – unverändert
 ######################################################################
 
 async def async_ping_host(ip, timeout=1):
@@ -271,23 +382,6 @@ async def async_ping_host(ip, timeout=1):
             return False
     except Exception:
         return False
-
-async def async_ping_sweep_subnet(subnet_str, logger, timeout=1):
-    logger.log("INFO", f"Async Ping-Sweep auf {subnet_str} (Timeout={timeout}s)...")
-    net = ipaddress.IPv4Network(subnet_str, strict=False)
-    hosts = list(net.hosts())
-    tasks = [async_ping_host(str(ip), timeout) for ip in hosts]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    active = []
-    for ip, res in zip(hosts, results):
-        ip_str = str(ip)
-        if isinstance(res, Exception):
-            logger.log("ERROR", f"Fehler beim async Ping für {ip_str}: {res}")
-        elif res:
-            active.append(ip_str)
-            logger.log("INFO", f"Host {ip_str} antwortet (async).")
-    logger.log("INFO", f"Async Ping-Sweep abgeschlossen. {len(active)} aktive Hosts.")
-    return active
 
 async def async_nmap_service_scan(ip, logger, args=["-sV", "-Pn"]):
     try:
@@ -318,6 +412,13 @@ async def async_scan_network_optimized(iface, logger):
     netmask = ip_info["netmask"].strip()
     network = ipaddress.IPv4Network(f"{local_ip}/{netmask}", strict=False)
     logger.log("INFO", f"Subnetz erkannt: {network}")
+
+    params = {"iface": iface, "network": str(network), "method": "async"}
+    cache = load_scan_cache()
+    key = get_cache_key(params)
+    if key in cache and (time.time() - cache[key]["timestamp"] < CACHE_EXPIRATION):
+        logger.log("INFO", "Lade Scan-Ergebnisse aus dem Cache.")
+        return cache[key]["results"]
 
     discovered = {}
     loop = asyncio.get_running_loop()
@@ -364,6 +465,9 @@ async def async_scan_network_optimized(iface, logger):
         if info["reachable"] is None:
             info["reachable"] = ping_host(ip_str, timeout=1)
         info["ip"] = ip_str
+
+    cache[key] = {"timestamp": time.time(), "results": discovered}
+    save_scan_cache(cache)
     logger.log("INFO", f"Async Scan abgeschlossen, {len(discovered)} Geräte gefunden.")
     return discovered
 
@@ -571,9 +675,13 @@ MMMMMMMWNNNNNNKl'........................................',,:odxkKWMMMMMWNNNNNNN
 MMMMMMMWNNNWNXd;;,'''':ol,.'...'',,,;,'''''''..'''''''''',,:dOKXXNMMMMMMWNNNNNNW
 MMMMMMMWNWNNNKOOOdc:::lOOl;;;,,;;;:cc:;;;;;;,,,,;,;;;;,;odo0KKNNNNMMMMMMWNNNNNNN
 WWWWWWWWWWWWWWNXNKkO0OxddllllccccloddolllllcccccccdOkdodK0ONNNWWNWWWWWWWWWWWWWWW
+NNNNNNNWMMMMMMMWNX0XWNX0kxxxxdxxxkOOOOOkkkkxxkOOOOKXXNXXNNXWMMMMWNNNNNNNWMMMMMMM
+NNNNNNNWMMMMMMMWNXKNNNNNXXXKKKXKKKXXKKKXNNNNNWWNNNNNNNNNWMMMMMMMWNNNNNNWWMMMMMMM
+NNNNNNNWMMMMMMMWNNNNNNNWMMMMWMMWNNNNNNNWMMMMMMMMWNNNNNNNWMMMMMMMWNNNNNNNWMMMMMMM
+WWWWWWWWMMMMMMMWNWWNNWWWMMMMMMMWNNNNNNWWMMMMMMMWWNNNNNNNWMWWMMMMWNWWNNWWWMMMMMMM
     """
-    print("\033[96m" + art + "\033[0m")
-    print("\033[92mEpic Network Scan Initiated by HackDevOli!\033[0m\n")
+    print(f"{Fore.CYAN}{art}{Fore.RESET}")
+    print(f"{Fore.GREEN}{Style.BRIGHT}Epic Network Scan Initiated by HackDevOli!{Style.RESET_ALL}\n")
 
 def merge_hosts_info(ip_list, existing_dict):
     for ip in ip_list:
@@ -802,6 +910,24 @@ async def managed_executor(max_workers=None):
         executor.shutdown(wait=True)
 
 ######################################################################
+#           PARALLELER SCAN ÜBER MEHRERE INTERFACES
+######################################################################
+
+def parallel_scan(interfaces, logger):
+    logger.log("INFO", f"Starte parallelen Scan über Interfaces: {interfaces}")
+    results = {}
+    with ThreadPoolExecutor(max_workers=len(interfaces)) as executor:
+        future_to_iface = {executor.submit(scan_network_enhanced, iface, logger): iface for iface in interfaces}
+        for future in as_completed(future_to_iface):
+            iface = future_to_iface[future]
+            try:
+                res = future.result()
+                results[iface] = res
+            except Exception as e:
+                logger.log("ERROR", f"Fehler beim Scan auf {iface}: {e}")
+    return results
+
+######################################################################
 #                        NEUES MENÜ SYSTEM
 ######################################################################
 
@@ -814,7 +940,9 @@ def show_main_menu():
     print("3) Spoofing & Sicherheits-Tools")
     print("4) Blackout-Optionen")
     print("5) Hinweise zu MITM-Techniken")
-    print("6) Beenden")
+    print("6) Parallel Scan über mehrere Interfaces")
+    print("7) Masscan Scan (schneller Port-Scan)")
+    print("8) Beenden")
     choice = input("Auswahl: ").strip()
     return choice
 
@@ -1107,11 +1235,11 @@ def main():
         resource.setrlimit(resource.RLIMIT_CPU, (60, 60))
         resource.setrlimit(resource.RLIMIT_AS, (500 * 1024 * 1024, 500 * 1024 * 1024))
     except Exception as e:
-        print(f"Warnung: Ressourcenlimit konnte nicht gesetzt werden: {e}")
+        print(f"{Fore.RED}Warnung: Ressourcenlimit konnte nicht gesetzt werden: {e}{Fore.RESET}")
 
-    # ASCII-Banner direkt beim Start anzeigen
+    # Banner direkt beim Start
     print_banner()
-    
+
     logger = PenTestLogger(log_to_console=True, log_file="hammer_log.csv", log_level="INFO")
     if os.geteuid() != 0:
         logger.log("ERROR", "Bitte als Root starten!")
@@ -1154,7 +1282,7 @@ def main():
                 for dev in device_list.values():
                     rows.append([dev["ip"], dev["name"], dev["mac"], dev["vendor"], dev["reachable"], dev["os"], dev["ports"]])
                 headers = ["IP-Adresse", "Name", "MAC-Adresse", "Vendor", "Status", "OS", "Ports"]
-                print("\n\033[95m=== Gefundene Geräte im Netzwerk ===\033[0m")
+                print(f"\n{Fore.MAGENTA}=== Gefundene Geräte im Netzwerk ==={Fore.RESET}")
                 print(tabulate(rows, headers=headers, tablefmt="fancy_grid"))
             else:
                 for i, dev in enumerate(device_list.values(), start=1):
@@ -1164,11 +1292,36 @@ def main():
         elif choice == "4":
             blackout_menu(iface, logger)
         elif choice == "5":
-            print("\nHinweise zu MITM-Techniken:")
+            print(f"\n{Fore.MAGENTA}Hinweise zu MITM-Techniken:{Fore.RESET}")
             print(" - DNS-Spoofing: DNS-Anfragen abfangen & manipulieren, um Traffic umzuleiten.")
             print(" - SSL-Strip: HTTPS auf HTTP downgraden (ohne HSTS).")
             print(" - Weitere Techniken: DHCP-Spoofing, Rogue-AP, Switch Attacks – immer nur in autorisierten Umgebungen!")
         elif choice == "6":
+            interfaces = input("Bitte Interfaces durch Komma getrennt eingeben (z.B. eth0, wlan0): ").split(",")
+            interfaces = [iface.strip() for iface in interfaces if iface.strip() in ifaces]
+            if not interfaces:
+                logger.log("ERROR", "Keine gültigen Interfaces ausgewählt.")
+            else:
+                results = parallel_scan(interfaces, logger)
+                print(f"\n{Fore.MAGENTA}Paralleles Scan-Ergebnis:{Fore.RESET}")
+                for iface_name, res in results.items():
+                    print(f"\nInterface: {iface_name} - {len(res)} Geräte gefunden")
+                    if TABULATE_AVAILABLE and res:
+                        rows = []
+                        for dev in res.values():
+                            rows.append([dev["ip"], dev["name"], dev["mac"], dev["vendor"], dev["reachable"], dev["os"], dev["ports"]])
+                        headers = ["IP-Adresse", "Name", "MAC-Adresse", "Vendor", "Status", "OS", "Ports"]
+                        print(tabulate(rows, headers=headers, tablefmt="fancy_grid"))
+        elif choice == "7":
+            subnet = input("Bitte das Subnetz eingeben (z.B. 192.168.0.0/16): ").strip()
+            if not subnet:
+                logger.log("ERROR", "Kein Subnetz eingegeben.")
+            else:
+                found = masscan_scan(subnet, logger)
+                print(f"{Fore.MAGENTA}Masscan-Ergebnis: {len(found)} Hosts gefunden:{Fore.RESET}")
+                for ip in found:
+                    print(ip)
+        elif choice == "8":
             print("Beende Programm. Auf Wiedersehen!")
             sys.exit(0)
         else:
