@@ -363,7 +363,6 @@ async def async_scan_network_optimized(iface, logger):
                 info["vendor"] = lookup_vendor_by_mac(found_mac)
         if info["reachable"] is None:
             info["reachable"] = ping_host(ip_str, timeout=1)
-        # Sicherstellen, dass die IP auch als Feld existiert
         info["ip"] = ip_str
     logger.log("INFO", f"Async Scan abgeschlossen, {len(discovered)} Geräte gefunden.")
     return discovered
@@ -537,7 +536,41 @@ def scan_network_ipv6(iface, logger):
 def print_banner():
     art = r"""
 MMMMMMMWNNNNNNNWMMMMMMMWNNNNNNNWMMMMMMMWNNNNNNNNWMMMMMMMWNNNNNNNMMMMMMMMWNNNNNNW
-... (ASCII-Art gekürzt zur Übersichtlichkeit) ...
+MMMMMMMWNNNNNNNWMMMMMWMWNNNNNNWWMMMMMMMWNNNNNNNNWMMMMMMMWNNXNNNNWMMMMMMMWNNNNNNW
+MMMMMMMWNNNNNNNWWWMMMMWXKXNNNNNWMMMWNNNNNNNNNNNNNWMMMWNNWN0kKNNWWMMMMMMMWNNNNNNW
+WWWWWWWWWWWWWWWXOKWWWXkxKNNXXXKXXXXXKKK000KKKKKKKKNWWWKkONOloONWWWWWWWWWWWWWWWWW
+NNNNNNNWMMMMWWWOokXN0olOKKXNNNNNXK00KKKKXXNNNNNXK0000XKock0o:ckNWNNNNNNWWMMMMMMM
+NNNNNNNWWWWWMNOlckNXxdOXNNWWMMMWWWWNNNWWWWWMMMMMWNX0OOOdccdo::ckNNNNNNNNWWMMMMMM
+NNNNNNNNNNNNN0oclkKkdOXWMMMMMMWWX0xl:cd0XNWWMMMMMWNNWKxoc::::::l0NNNNNNNNNNWWMMM
+WWNNNNXXNNNNXxcccooxKNWWMMMMMXkl;'.....,:lkXNWMMMMMMMWX0Okl::::cxXXXXXNNNNNNNWWW
+MWNXNNXXNXKX0o::cd0WMMWMMMMXx;.........',,,cxKNWMMMMMMMMWWKxl:;cxKXXXNNXXNNNXNNW
+WNNNNNXOkkx0OlldONWMMWWMMNx;...........''''',cxKWWMMMMMMWWWNKkdodkKXXXXXXXXXXXNN
+WXNNNNXOooxxxxkOKKKXWMMW0c..............'''',,,cONMWWMMMWKkdolodolx0KKKXXXXXXXNN
+NNNNNKxdOOkxolcccllokXWk,...............'''''',,;xNWWMMMNKK0koc:;;dOOO0Kkx0XXXXN
+NNXXXOl:ldxxlcclx0KKXXk,................''....''',oXWWMMWWWNX0dlc:lddk0kcckXXXXW
+NNXXXx:::lolc::cdkKNWO,  ......................''.'oXWWWWNNNKOocccloxKOc;:dKXXNW
+NNXXKo;:ldl:;:coxOKXKc.  .........'',,,'.........'.'kNNNNXXXXXKOkxxloko;;;oKKXNW
+WWNX0o;;clcldk0KXKKXx.   .....,:loxkOkkdoc;'........:KNXXKKXXKKKKOl;lxo:;;o0KXWW
+MMWNKd:;;;cdO00KKKK0:   ...':dOKXXXNNNNNXXOo;'.......oXXKKKKKK00OOo;;cc;,;dKXNNW
+MMMWNOl;;;:d000KK0KO,     .okkkOKNX0KXNNNNKko;'......'xXKKK0KK00Oxl;,;:;;ckXNNNW
+MMMMMXd::::lx00OO0KO;     ';.. .'cxkkkd:;,.. ... .....c0KKKK0O00Oo:,,,;;;c0NNNNN
+WWWWWNx:::::okocx000c     ,;... .,xOkkc.     .,.    ...dXKKKOO00Okl;,,;;;lKWWWWW
+NNNNNW0c,;;;cl:oO00Kk'   .okdddoloc'.;xxolcc:ok:    ..;kXK0OOK00xldl;,;,:OWWMMMM
+WNNNXKKk:,;;;cdO0000k:.   .;lc:lxk:...d0kd:clc:.   ..:kKKKK00K00klcc;,;;ldxXMMMM
+NNNNX0Okxl;,;cdkOkOO;...      ..l0KOxOKkl;.       .;d0KKKKKKK0xk0kxo;;;;;ckNWMMM
+WWWWWNK0kxoc;;;loox:.         .'ckKKXKOo;,.    ..'o0KKK00KKK00000Od:;;oO0XWWWWWW
+MMMMMMWNK0ko::;;:dc..           ..,::'..     ....:OKKKK0dok000Oxxxc;,:OX00NNNNNN
+MMMMMMWNXNNKxc;;:ll:,'.         ..... ...        .:x0K00x:;lOOl::;,,:dOkk0XNNNNN
+MMMMMMWKOOOkdl;;;;;cl,          .';,','..       ....o0KKkdc:do;,,,;cdxkkOKXNNNNN
+WWWWWWWKxl;,,;;,,,;:'            ..''....     .......oK0kOxlc:,,,;cdxkkkOXWWWWWW
+NNNNNNNWWNK000Oxoll'           .  ... ..   ...........dOool,,,,,,;oxk0KXNWMMMMMM
+NNNNNNNWWWMMMNXNXk,.  ...      .  ... .. .............,l:,,''',;:lddkKNNWMMMMMMM
+NNNNNNNWWWMMMWNWK:.. ..... .....  ... .................,:,'',;cloodkKNNNWMMMMMMM
+WWWWWWWWWWWWWWWKc...............  ......................,,,:cloooxOXNWWWWWWWWWWW
+MMMMMMMWNNNNNNKl'........................................',,:odxkKWMMMMMWNNNNNNN
+MMMMMMMWNNNWNXd;;,'''':ol,.'...'',,,;,'''''''..'''''''''',,:dOKXXNMMMMMMWNNNNNNW
+MMMMMMMWNWNNNKOOOdc:::lOOl;;;,,;;;:cc:;;;;;;,,,,;,;;;;,;odo0KKNNNNMMMMMMWNNNNNNN
+WWWWWWWWWWWWWWNXNKkO0OxddllllccccloddolllllcccccccdOkdodK0ONNNWWNWWWWWWWWWWWWWWW
     """
     print("\033[96m" + art + "\033[0m")
     print("\033[92mEpic Network Scan Initiated by HackDevOli!\033[0m\n")
@@ -591,7 +624,6 @@ def scan_network_enhanced(iface, logger):
         discovered = merge_hosts_info(nmap_list, discovered)
     elif use_nmap:
         logger.log("INFO", "Geräte bereits durch ARP/Ping gefunden, überspringe Nmap-Discovery.")
-    # Sicherstellen, dass alle Einträge das Feld "ip" besitzen
     for ip_str, info in discovered.items():
         info["ip"] = ip_str
         if not info["mac"]:
@@ -803,7 +835,6 @@ def netzwerkscan_menu(iface, logger):
     elif sub_choice == "3":
         devices = {}
         ipv6_devices = scan_network_ipv6(iface, logger)
-        # Umwandeln in Dictionary, falls gewünscht (Key = IPv6-Adresse)
         for dev in ipv6_devices:
             devices[dev["ip"]] = dev
     else:
@@ -837,7 +868,6 @@ def spoofing_menu(iface, logger):
             if not validate_mac(target_mac):
                 logger.log("ERROR", "Ungültiges MAC-Format für Ziel-MAC.")
                 return
-        # Gateway-MAC ermitteln
         from scapy.all import Ether, ARP, srp
         eth = Ether(dst="ff:ff:ff:ff:ff:ff")
         arp_req = ARP(pdst=gateway_ip)
@@ -1079,12 +1109,13 @@ def main():
     except Exception as e:
         print(f"Warnung: Ressourcenlimit konnte nicht gesetzt werden: {e}")
 
+    # ASCII-Banner direkt beim Start anzeigen
+    print_banner()
+    
     logger = PenTestLogger(log_to_console=True, log_file="hammer_log.csv", log_level="INFO")
     if os.geteuid() != 0:
         logger.log("ERROR", "Bitte als Root starten!")
         sys.exit(1)
-    logger.log("INFO", "Willkommen im HAMMER OF THE GODS – Extended Network Toolkit!")
-    logger.log("INFO", "Nur in autorisierten Testumgebungen verwenden.")
     ifaces = netifaces.interfaces()
     print("\nVerfügbare Netzwerkschnittstellen:")
     for i, ifc in enumerate(ifaces, start=1):
@@ -1104,20 +1135,17 @@ def main():
             logger.log("WARNING", f"{choice} nicht in Liste, versuche trotzdem.")
             iface = choice
 
-    # Geräte-Speicher (übergreifend verwendbar)
     device_list = {}
 
     while True:
         choice = show_main_menu()
         if choice == "1":
-            # Scan-Menü
             device_list = netzwerkscan_menu(iface, logger)
             if device_list:
                 logger.log("INFO", f"{len(device_list)} Geräte gefunden.")
             else:
                 logger.log("INFO", "Keine Geräte gefunden.")
         elif choice == "2":
-            # Anzeige-Menü
             if not device_list:
                 print("Keine Geräteliste vorhanden. Bitte erst einen Netzwerkscan durchführen.")
                 continue
